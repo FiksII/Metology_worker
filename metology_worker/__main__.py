@@ -28,6 +28,10 @@ def doctor(config):
     }
     for name in ['torch', 'psycopg', 'boto3', 'PIL', 'pillow_heif', 'diff_gaussian_rasterization', 'onnxruntime']:
         checks[name] = importlib.util.find_spec(name) is not None
+    if config.ssh.enabled:
+        checks['asyncssh'] = importlib.util.find_spec('asyncssh') is not None
+        checks['SSH private key'] = bool(config.ssh.key_path and config.ssh.key_path.is_file())
+        checks['SSH known_hosts'] = config.ssh.known_hosts.is_file()
     if checks['torch']:
         import torch
         checks['CUDA accessible'] = torch.cuda.is_available()
@@ -66,12 +70,11 @@ def run(config):
     from .service import consume_queue, listener_factory
     from .storage import create_storage
     from .tempfiles import process_directory
+    from .tunnel import database_transport
 
     if platform.system() != 'Linux':
         raise ValueError('run_requires_linux_or_wsl2')
     config.validate_remote()
-    db = create_database(config)
-    db.check_version()
     worker_id = uuid.uuid4()
     stopped = threading.Event()
     deadline = [None]
@@ -84,17 +87,33 @@ def run(config):
 
     signal.signal(signal.SIGTERM, shutdown)
     signal.signal(signal.SIGINT, shutdown)
-    engine = FaceLiftEngine(config.facelift_path)
-    storage = create_storage(config)
-    with process_directory(config.temp_root, worker_id) as root:
-        def execute(a):
-            if (a['input_bucket'] != config.s3_bucket or a['result_bucket'] != config.s3_bucket
-                    or a['input_size_bytes'] <= 0 or a['parameters'] != {}):
-                raise RuntimeError('invalid_claim_configuration')
-            outcome = run_attempt(db, storage, engine, a, root, lambda: deadline[0])
-            LOG.info('attempt_outcome=%s', outcome)
-        LOG.info('worker_ready')
-        consume_queue(db, listener_factory(config), worker_id, stopped, execute)
+    with database_transport(config) as (db_config, check_ready):
+        if stopped.is_set():
+            return 0
+        db = create_database(db_config, check_ready)
+        db.check_version()
+        engine = FaceLiftEngine(config.facelift_path)
+        storage = create_storage(config)
+        with process_directory(config.temp_root, worker_id) as root:
+            def execute(a):
+                if (a['input_bucket'] != config.s3_bucket or a['result_bucket'] != config.s3_bucket
+                        or a['input_size_bytes'] <= 0 or a['parameters'] != {}):
+                    raise RuntimeError('invalid_claim_configuration')
+                outcome = run_attempt(db, storage, engine, a, root, lambda: deadline[0])
+                LOG.info('attempt_outcome=%s', outcome)
+            LOG.info('worker_ready')
+            consume_queue(db, listener_factory(db_config, check_ready), worker_id, stopped, execute)
+    return 0
+
+
+def check_database(config):
+    from .database import create_database
+    from .tunnel import database_transport
+    if not config.database_url:
+        raise ValueError('missing_database_configuration')
+    with database_transport(config) as (db_config, check_ready):
+        create_database(db_config, check_ready).check_version()
+    print('OK: PostgreSQL worker_api/v1')
     return 0
 
 
@@ -104,6 +123,7 @@ def main(argv=None):
     commands = parser.add_subparsers(dest='command', required=True)
     commands.add_parser('doctor', help='Check environment and model files without database access')
     commands.add_parser('run', help='Consume worker_api/v1 jobs')
+    commands.add_parser('check-db', help='Check PostgreSQL worker_api/v1, including optional SSH tunnel')
     local = commands.add_parser('infer-local', help='Generate PLY from one photo without PostgreSQL/S3')
     local.add_argument('input', type=Path)
     local.add_argument('output', type=Path)
@@ -116,7 +136,7 @@ def main(argv=None):
     os.umask(0o077)
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
     # Do not enable boto/SQL debug logs: they may contain request credentials.
-    for name in ['botocore', 'boto3', 'urllib3', 'psycopg']:
+    for name in ['botocore', 'boto3', 'urllib3', 'psycopg', 'asyncssh']:
         logging.getLogger(name).setLevel(logging.WARNING)
     try:
         config = Config.load()
@@ -124,6 +144,8 @@ def main(argv=None):
             return doctor(config)
         if args.command == 'infer-local':
             return infer_local(config, args.input.resolve(), args.output.resolve())
+        if args.command == 'check-db':
+            return check_database(config)
         return run(config)
     except Exception as error:
         # Only bounded internal codes, never str(network_error) or a raw traceback.

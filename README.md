@@ -145,7 +145,7 @@ SELECT pg_notify('metology_jobs', '{"v":1,"type":"photo_3D_fl"}');
 Сигнал только пробуждает воркер и не создаёт задание. Если сигнал пропущен,
 очередь всё равно проверяется не реже раза в 30 секунд при свободном GPU slot.
 
-В production PostgreSQL использует `sslmode=verify-full`, S3 — HTTPS.
+При прямом production-подключении PostgreSQL использует `sslmode=verify-full`, S3 — HTTPS.
 Для частного центра сертификации PostgreSQL укажите `PGSSLROOTCERT`.
 `WORKER_ALLOW_INSECURE=1` разрешён только для локальной тестовой инфраструктуры.
 
@@ -175,6 +175,68 @@ SELECT pg_notify('metology_jobs', '{"v":1,"type":"photo_3D_fl"}');
 - SIGTERM/Ctrl+C прекращает claim и даёт активной работе до 300 секунд.
   Затем расчёт остановится в ближайшей безопасной точке. Жёсткую границу
   зависшего CUDA-вызова обеспечивает supervisor (`TimeoutStopSec` в systemd).
+
+## Встроенный SSH-туннель
+
+Воркер может подключаться через [AsyncSSH](https://asyncssh.readthedocs.io/en/stable/#port-forwarding)
+внутри Python. Команда `ssh` и отдельный терминал не нужны. Туннель работает
+в отдельном потоке с asyncio-циклом; это не блокирует FaceLift и heartbeat.
+
+Пример `.env`, если PostgreSQL доступен на loopback SSH-сервера:
+
+```dotenv
+DATABASE_URL=postgresql://metology_worker:URL_ENCODED_PASSWORD@127.0.0.1:5432/metology
+DATABASE_NOTIFY_CHANNEL=metology_jobs
+
+SSH_TUNNEL_ENABLED=1
+SSH_HOST=your-server
+SSH_PORT=22
+SSH_USER=worker
+SSH_KEY_PATH=/home/user/.ssh/id_ed25519
+SSH_KNOWN_HOSTS_PATH=/home/user/.ssh/known_hosts
+SSH_KEY_PASSPHRASE=
+SSH_LOCAL_PORT=15432
+SSH_REMOTE_HOST=127.0.0.1
+SSH_REMOTE_PORT=5432
+SSH_DATABASE_SSLMODE=disable
+
+WORKER_ALLOW_INSECURE=0
+```
+
+`DATABASE_URL` задаёт пользователя, пароль и имя базы. Адрес сокета и порт
+воркер подменяет только в памяти на адрес своего туннеля; `.env` не изменяется.
+Локальный порт слушает только `127.0.0.1`. `SSH_LOCAL_PORT=0` позволяет выбрать
+свободный порт автоматически; при переподключении выбранный порт сохраняется.
+
+Ключ сервера должен быть заранее проверен и добавлен в указанный `known_hosts`.
+Отключение проверки ключа не поддерживается. Для ключа с парольной фразой
+задайте `SSH_KEY_PASSPHRASE` через secret storage или локальный `.env` с правами
+`0600`; содержимое ключа и парольная фраза в логи не выводятся.
+SSH-пользователю требуется разрешение TCP forwarding к адресу базы.
+
+`SSH_DATABASE_SSLMODE=disable` отключает только TLS PostgreSQL внутри туннеля,
+когда база находится на самом SSH-сервере. S3 продолжает требовать HTTPS.
+Если база находится на другом хосте, укажите `SSH_DATABASE_SSLMODE=verify-full`,
+`SSH_REMOTE_HOST` — адрес базы, а hostname в `DATABASE_URL` — имя из её TLS
+сертификата. При частном CA задайте `PGSSLROOTCERT`.
+
+Обновить локальное окружение и проверить доступ без GPU/S3:
+
+```bash
+source .venv/bin/activate
+python -m pip install -e '.[dev]'
+python -m metology_worker --env-file .env check-db
+```
+
+`check-db` открывает туннель, проверяет `worker_api/v1` и закрывает соединения.
+Отсутствие функций `worker_api` даст ошибку, даже если сам SSH и доступ к базе
+работают. Постоянная работа запускается обычной командой `run`.
+
+Туннель восстанавливается с задержками 1, 2, 5, 10, 30 секунд. Пока он недоступен,
+новые подключения к базе отклоняются, а существующая логика heartbeat/lease
+определяет, можно ли продолжить текущую попытку. После потери lease результат
+не публикуется. Ошибки ключа/аутентификации требуют исправления конфигурации
+и перезапуска. При завершении воркер закрывает только свой туннель.
 
 ## Сервис на Linux
 

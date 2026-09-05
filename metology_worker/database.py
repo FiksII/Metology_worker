@@ -41,13 +41,14 @@ class Database:
         return self.call('acknowledge_cancellation_v1', self.identity(a))
 
 
-def create_database(config):
+def create_database(config, check_ready=lambda: None):
     import psycopg
     from psycopg.rows import dict_row
     from .service import connection_options
 
     @contextmanager
     def connect():
+        check_ready()
         try:
             with psycopg.connect(config.database_url, connect_timeout=5,
                                  row_factory=dict_row,
