@@ -1,0 +1,23 @@
+[Unit]
+Description=Metology FaceLift GPU worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=metology-worker
+Group=metology-worker
+WorkingDirectory=/srv/metology-worker
+EnvironmentFile=/srv/metology-worker/.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/srv/metology-worker/.venv/bin/python -m metology_worker run
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=330
+KillSignal=SIGTERM
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
