@@ -125,6 +125,26 @@ python -m metology_worker --env-file .env run
 Нужны `DATABASE_URL` отдельной PostgreSQL-роли и S3 endpoint, region, bucket,
 access key, secret key. Роль вызывает только функции `worker_api`, без доступа
 к таблицам Django. Bucket из claim должен совпадать с `S3_BUCKET`.
+Канал задаётся отдельно от URL базы:
+
+```dotenv
+DATABASE_NOTIFY_CHANNEL=metology_jobs
+```
+
+По умолчанию используется `metology_jobs` из контракта v1. Если переопределяете
+канал, backend должен отправлять `NOTIFY` в тот же канал: настройка воркера
+не меняет backend. Допустимы латинские буквы, цифры и `_`, первый символ —
+буква или `_`, длина до 63 символов. Регистр сохраняется.
+Канал PostgreSQL не требует предварительного создания; воркер подписывается
+через `LISTEN`. Проверочный сигнал из той же базы:
+
+```sql
+SELECT pg_notify('metology_jobs', '{"v":1,"type":"photo_3D_fl"}');
+```
+
+Сигнал только пробуждает воркер и не создаёт задание. Если сигнал пропущен,
+очередь всё равно проверяется не реже раза в 30 секунд при свободном GPU slot.
+
 В production PostgreSQL использует `sslmode=verify-full`, S3 — HTTPS.
 Для частного центра сертификации PostgreSQL укажите `PGSSLROOTCERT`.
 `WORKER_ALLOW_INSECURE=1` разрешён только для локальной тестовой инфраструктуры.

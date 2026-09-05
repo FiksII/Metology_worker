@@ -1,4 +1,5 @@
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -19,6 +20,11 @@ class Config:
     s3_addressing_style: str = 'path'
     insecure: bool = False
     shutdown_seconds: int = 300
+    notify_channel: str = 'metology_jobs'
+
+    def __post_init__(self):
+        if not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]{0,62}', self.notify_channel):
+            raise ValueError('invalid_notify_channel')
 
     @classmethod
     def load(cls):
@@ -30,6 +36,7 @@ class Config:
             env.get('S3_ACCESS_KEY_ID', ''), env.get('S3_SECRET_ACCESS_KEY', ''),
             env.get('S3_REGION', 'us-east-1'), env.get('S3_ADDRESSING_STYLE', 'path'),
             env.get('WORKER_ALLOW_INSECURE') == '1', int(env.get('WORKER_SHUTDOWN_SECONDS', '300')),
+            notify_channel=env.get('DATABASE_NOTIFY_CHANNEL', 'metology_jobs'),
         )
 
     def validate_remote(self):

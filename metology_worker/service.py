@@ -46,7 +46,9 @@ def listener_factory(config):
         try:
             with psycopg.connect(config.database_url, autocommit=True, connect_timeout=5,
                                  **connection_options(config)) as connection:
-                connection.execute('LISTEN metology_jobs')
+                connection.execute(psycopg.sql.SQL('LISTEN {}').format(
+                    psycopg.sql.Identifier(config.notify_channel)
+                ))
                 yield Listener(connection)
         except (psycopg.OperationalError, psycopg.InterfaceError):
             raise ConnectionError('listen_unavailable') from None
