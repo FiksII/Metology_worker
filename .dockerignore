@@ -1,0 +1,36 @@
+# Allow only source files required by the image; never send the whole workspace.
+**
+!pyproject.toml
+!requirements-facelift.txt
+!metology_worker/
+!metology_worker/**
+!tests/
+!tests/**
+!worker_processors/
+worker_processors/**
+!worker_processors/FaceLift/
+worker_processors/FaceLift/**
+!worker_processors/FaceLift/inference.py
+!worker_processors/FaceLift/LICENSE
+!worker_processors/FaceLift/Adobe Research License v1.2.txt
+!worker_processors/FaceLift/configs/
+!worker_processors/FaceLift/configs/**
+!worker_processors/FaceLift/gslrm/
+!worker_processors/FaceLift/gslrm/**
+!worker_processors/FaceLift/mvdiffusion/
+!worker_processors/FaceLift/mvdiffusion/**
+!worker_processors/FaceLift/utils_folder/
+!worker_processors/FaceLift/utils_folder/**
+**/__pycache__/
+**/*.py[cod]
+**/.git/
+**/.env*
+**/.ssh/
+**/*.pem
+**/*.key
+**/id_*
+**/*.pt
+**/*.pth
+**/*.ckpt
+**/*.safetensors
+!worker_processors/FaceLift/mvdiffusion/data/fixed_prompt_embeds_6view/clr_embeds.pt

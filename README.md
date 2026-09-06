@@ -4,6 +4,203 @@
 Он забирает `photo_3D_fl` из PostgreSQL через `worker_api/v1`, скачивает фото из
 закрытого S3 bucket, вызывает FaceLift и загружает бинарный PLY.
 
+## Быстрый запуск в Docker
+
+Образ содержит Python 3.10, CUDA toolkit, PyTorch, зависимости воркера и код
+вашего FaceLift. На хосте нужны Docker Compose v2+, NVIDIA driver и доступ GPU
+из контейнеров. Для Linux настройте
+[NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html);
+для Windows используйте Docker Desktop с WSL2 и Linux containers.
+CUDA toolkit и Python на хосте при таком запуске не нужны.
+
+Перед сборкой клонируйте **ваш изменённый FaceLift** в
+`worker_processors/FaceLift` (см. раздел о двух Git-репозиториях ниже).
+Без него сборка не пройдёт. Веса, фотографии, `.env` и SSH-ключи исключены из
+контекста сборки; небольшой `clr_embeds.pt` из репозитория FaceLift включён.
+
+```bash
+cp .env.example .env
+chmod 600 .env
+# Заполнить DATABASE_URL, S3_* и при необходимости SSH_*.
+```
+
+В PowerShell вместо этих двух команд: `Copy-Item .env.example .env`.
+Не перезаписывайте уже настроенный `.env`. По умолчанию выбран `CUDA_PROFILE=cu128`
+для RTX 50 / Blackwell. Для RTX 20/30/40 и исходного стека FaceLift задайте
+`CUDA_PROFILE=cu124`. GPU выбирается через `GPU_DEVICE_ID=0`.
+Профиль `cu128` ещё требует проверки реального инференса на целевой GPU.
+
+### Если PostgreSQL подключается через SSH
+
+В `.env` задайте пути **на хосте Docker** (при локальном Docker Engine это
+машина, с которой запускаете Compose):
+
+```dotenv
+SSH_TUNNEL_ENABLED=1
+SSH_HOST=your-server
+SSH_USER=worker
+SSH_KEY_PATH=/home/user/.ssh/id_ed25519
+SSH_KNOWN_HOSTS_PATH=/home/user/.ssh/known_hosts
+SSH_KEY_PASSPHRASE=
+SSH_REMOTE_HOST=127.0.0.1
+SSH_REMOTE_PORT=5432
+SSH_DATABASE_SSLMODE=disable
+```
+
+Для Compose из PowerShell пути записывайте с прямыми слешами:
+`SSH_KEY_PATH=C:/Users/Ilya/.ssh/id_ed25519` и
+`SSH_KNOWN_HOSTS_PATH=C:/Users/Ilya/.ssh/known_hosts`.
+Для Compose из WSL нужны Linux-пути, например `/home/user/.ssh/id_ed25519`
+или `/mnt/c/Users/Ilya/.ssh/id_ed25519`. Используйте абсолютные пути без `~`.
+Оба файла должны существовать; `known_hosts` должен содержать проверенный
+ключ SSH-сервера. Для нестандартного порта запись имеет вид `[host]:port`.
+
+```bash
+docker compose -f compose.yaml -f compose.ssh.yaml build
+docker compose -f compose.yaml -f compose.ssh.yaml run --rm worker check-db
+docker compose -f compose.yaml -f compose.ssh.yaml up -d
+docker compose -f compose.yaml -f compose.ssh.yaml logs -f --tail=100
+```
+
+**`SSH_KEY_PATH` подцепится:** `compose.ssh.yaml` использует его как источник
+bind mount и передаёт воркеру путь `/run/secrets/ssh_private_key` внутри
+контейнера. `known_hosts` подключается аналогично. Оба файла доступны только
+для чтения. Неверный путь остановит запуск: воркер проверяет, что это файлы,
+и сообщает `ssh_private_key_missing` или `ssh_known_hosts_missing`.
+Ключ остаётся на хосте и не попадает в образ. Парольная фраза приходит через
+окружение из `.env`; значения с `$` заключайте в одинарные кавычки.
+Монтировать всю `.ssh` или публиковать порт `15432` не требуется: туннель и
+клиент PostgreSQL работают внутри одного контейнера.
+
+### Если PostgreSQL доступен напрямую
+
+Оставьте `SSH_TUNNEL_ENABLED=0`. SSH-файлы в этом режиме не нужны:
+
+```bash
+docker compose build
+docker compose run --rm worker check-db
+docker compose up -d
+docker compose logs -f --tail=100
+```
+
+`127.0.0.1` в `DATABASE_URL`, `SSH_HOST` или S3 endpoint относится к самому
+контейнеру. Для сервисов на Windows-хосте используйте `host.docker.internal`,
+для удалённого сервера — его DNS-имя/IP. `SSH_REMOTE_HOST=127.0.0.1` по-прежнему
+относится к **SSH-серверу**. Если нужен частный CA PostgreSQL, отдельно подключите
+его файл read-only через Compose override и задайте `PGSSLROOTCERT` путём внутри
+контейнера; один путь с хоста в `.env` не даёт доступа к файлу.
+
+### Две GPU: две задачи одновременно
+
+В существующем `.env` задайте:
+
+```dotenv
+COMPOSE_PROFILES=multi-gpu
+GPU_DEVICE_ID=0
+GPU_DEVICE_ID_2=1
+```
+
+`worker` работает на первой карте, `worker-gpu-1` — на второй. Укажите разные
+ID из `nvidia-smi`; также можно использовать UUID карт. Привязка использует
+[`device_ids` Docker Compose](https://docs.docker.com/compose/how-tos/gpu-support/).
+Каждый контейнер видит только выбранную GPU, поэтому внутренний `cuda:0`
+FaceLift относится к своей карте. Каждый процесс держит собственную модель
+в видеопамяти и обрабатывает одну задачу за раз: суммарный concurrency — 2.
+Вся модель должна помещаться на каждой карте; память двух GPU не складывается.
+Задачи распределяются через существующий PostgreSQL claim, у каждого процесса
+свой `worker_id`, heartbeat и остановка. Более быстрая карта сразу берёт новую
+задачу, не дожидаясь второй.
+
+Перед первым параллельным запуском подготовьте общие веса: перенесите готовые
+checkpoints по инструкции ниже и выполните `infer-local` на `worker`, чтобы
+скачать недостающие файлы. Это исключает одновременную первую загрузку моделей
+двумя процессами. Веса и model cache общие, временные файлы контейнеров хранятся
+в отдельных volumes. На хосте также нужна RAM для двух экземпляров модели.
+
+Для прямого подключения к PostgreSQL:
+
+```bash
+docker compose build worker
+docker compose config --quiet
+docker compose up -d
+docker compose logs -f --tail=100 worker worker-gpu-1
+```
+
+Для подключения через SSH:
+
+```bash
+docker compose -f compose.yaml -f compose.ssh.yaml build worker
+docker compose -f compose.yaml -f compose.ssh.yaml config --quiet
+docker compose -f compose.yaml -f compose.ssh.yaml up -d
+docker compose -f compose.yaml -f compose.ssh.yaml logs -f --tail=100 worker worker-gpu-1
+```
+
+SSH overlay подключает ключ и `known_hosts` к обоим контейнерам. Каждый создаёт
+свой туннель; одинаковый `SSH_LOCAL_PORT` допустим, поскольку контейнеры имеют
+отдельные сетевые пространства. Порты на хост не публикуются.
+
+Проверить выбор карт можно без запуска очереди:
+
+```bash
+docker compose run --rm --entrypoint nvidia-smi worker
+docker compose run --rm --entrypoint nvidia-smi worker-gpu-1
+```
+
+При SSH добавляйте `-f compose.yaml -f compose.ssh.yaml` к этим командам.
+Не используйте `--scale worker=2`: обе копии получат один и тот же `GPU_DEVICE_ID`.
+Чтобы вернуться к одной GPU, сначала остановите второй контейнер командой
+`docker compose stop worker-gpu-1` (с SSH-флагами при необходимости), затем
+очистите `COMPOSE_PROFILES` в `.env`. Обычный запуск без профиля использует одну GPU.
+
+### Веса, проверка GPU и обновление
+
+Первая сборка скачивает несколько гигабайт CUDA/PyTorch и компилирует rasterizer.
+`DOCKER_BUILD_JOBS=2` ограничивает параллелизм компиляции. Архитектуры по умолчанию:
+`cu124` — `7.5;8.0;8.6;8.9;9.0+PTX`, `cu128` — `10.0;12.0+PTX`.
+Для сборки только под RTX 50 можно задать `CUDA_ARCH_LIST=12.0`.
+Расширение собирается без GPU; доступ GPU нужен при запуске.
+Зависимости кэшируются отдельно от кода. Rasterizer закреплён на Git commit,
+а фактические версии пакетов записаны в `/opt/worker/installed-requirements.txt`.
+
+Compose сохраняет checkpoints, Hugging Face/rembg/torch cache и рабочие
+временные файлы в отдельных named volumes. При первом инференсе FaceLift
+скачивает недостающие веса; `doctor` их не скачивает и до этого может показывать
+`MISSING`. Обычные `down`, пересоздание контейнера и пересборка сохраняют volumes.
+**`down -v` удаляет их, включая скачанные веса.** Уже скачанные на хосте
+checkpoints можно перенести перед первым запуском:
+
+```bash
+docker compose create worker
+docker compose cp worker_processors/FaceLift/checkpoints/. worker:/opt/worker/worker_processors/FaceLift/checkpoints/
+```
+
+Проверка локального фото без получения заданий из backend (Linux/WSL):
+
+```bash
+mkdir -p outputs
+docker compose run --rm --entrypoint nvidia-smi worker
+docker compose run --rm worker doctor
+docker compose run --rm -v "$PWD/photo.jpg:/input/photo.jpg:ro" -v "$PWD/outputs:/output" worker infer-local /input/photo.jpg /output/result.ply
+```
+
+Файл `photo.jpg` должен существовать, `result.ply` не должен существовать.
+В PowerShell используйте `${PWD}/photo.jpg` и `${PWD}/outputs` в аргументах `-v`.
+Контейнер запускается от root, чтобы читать закрытый SSH-ключ через bind mount.
+На Linux результат локального инференса также принадлежит root; при необходимости
+передайте его своему пользователю: `sudo chown "$(id -u):$(id -g)" outputs/result.ply`.
+При SSH добавляйте `-f compose.yaml -f compose.ssh.yaml` ко всем командам Compose
+в этом разделе, включая остановку и обновление.
+После обновления checkout воркера или FaceLift: `docker compose up -d --build`.
+Остановка: `docker compose down`; контейнер даёт воркеру 330 секунд на завершение.
+Если увеличиваете `WORKER_SHUTDOWN_SECONDS`, увеличьте `WORKER_STOP_GRACE_PERIOD`
+ещё минимум на 30 секунд. `restart: unless-stopped` восстанавливает процесс
+после сбоя или перезапуска Docker.
+
+Для проверки конфигурации без вывода секретов: `docker compose config --quiet`
+(для SSH добавьте оба `-f`). Отдельная лёгкая сборка запускает CPU-тесты без
+CUDA и весов: `docker build --target test -t metology-worker:cpu-test .`.
+Она не заменяет проверку GPU и создание настоящего PLY.
+
 ## Как связаны проекты
 
 ```text
@@ -155,7 +352,8 @@ SELECT pg_notify('metology_jobs', '{"v":1,"type":"photo_3D_fl"}');
 
 ## Поведение и восстановление
 
-- Один GPU slot: следующая job берётся после окончания текущей.
+- Один GPU slot на процесс: следующая job берётся после окончания текущей.
+  Compose-профиль `multi-gpu` запускает два процесса на разных GPU, до двух jobs одновременно.
 - Отдельное autocommit LISTEN-соединение; claim после подключения, сигнала
   или ожидания до 30 секунд. NOTIFY не является заданием.
 - Heartbeat каждые 20 секунд в отдельном потоке и при смене этапа.

@@ -1,0 +1,61 @@
+name: metology-worker
+
+services:
+  worker: &worker
+    image: metology-worker:${CUDA_PROFILE:-cu128}
+    platform: linux/amd64
+    build:
+      context: .
+      target: gpu
+      args:
+        CUDA_PROFILE: ${CUDA_PROFILE:-cu128}
+        CUDA_ARCH_LIST: ${CUDA_ARCH_LIST:-}
+        MAX_JOBS: ${DOCKER_BUILD_JOBS:-2}
+    env_file:
+      - ${WORKER_ENV_FILE:-.env}
+    environment:
+      FACELIFT_PATH: /opt/worker/worker_processors/FaceLift
+      WORKER_TEMP_ROOT: /var/lib/metology-worker/tmp
+    init: true
+    restart: unless-stopped
+    stop_grace_period: ${WORKER_STOP_GRACE_PERIOD:-330s}
+    shm_size: 2gb
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${GPU_DEVICE_ID:-0}"]
+              capabilities: [gpu]
+    volumes:
+      - checkpoints:/opt/worker/worker_processors/FaceLift/checkpoints
+      - model-cache:/root/.cache
+      - worker-temp:/var/lib/metology-worker/tmp
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+  worker-gpu-1:
+    <<: *worker
+    profiles: [multi-gpu]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${GPU_DEVICE_ID_2:-1}"]
+              capabilities: [gpu]
+    volumes:
+      - checkpoints:/opt/worker/worker_processors/FaceLift/checkpoints
+      - model-cache:/root/.cache
+      - worker-temp-2:/var/lib/metology-worker/tmp
+
+volumes:
+  checkpoints:
+  model-cache:
+  worker-temp:
+  worker-temp-2:

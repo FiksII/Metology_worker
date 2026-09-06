@@ -1,0 +1,25 @@
+# docker compose -f compose.yaml -f compose.ssh.yaml up -d --build
+services:
+  worker: &ssh-worker
+    environment:
+      SSH_TUNNEL_ENABLED: "1"
+      SSH_KEY_PATH: /run/secrets/ssh_private_key
+      SSH_KNOWN_HOSTS_PATH: /run/secrets/ssh_known_hosts
+    volumes:
+      - type: bind
+        source: ${SSH_KEY_PATH:?Set SSH_KEY_PATH to an absolute private key path on the Docker host}
+        target: /run/secrets/ssh_private_key
+        read_only: true
+        bind:
+          create_host_path: false
+
+      - type: bind
+        source: ${SSH_KNOWN_HOSTS_PATH:?Set SSH_KNOWN_HOSTS_PATH to an absolute known_hosts path on the Docker host}
+        target: /run/secrets/ssh_known_hosts
+        read_only: true
+        bind:
+          create_host_path: false
+
+  worker-gpu-1:
+    <<: *ssh-worker
+    profiles: [multi-gpu]
