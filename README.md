@@ -13,8 +13,8 @@
 для Windows используйте Docker Desktop с WSL2 и Linux containers.
 CUDA toolkit и Python на хосте при таком запуске не нужны.
 
-Перед сборкой клонируйте **ваш изменённый FaceLift** в
-`worker_processors/FaceLift` (см. раздел о двух Git-репозиториях ниже).
+Перед сборкой загрузите подмодуль **FaceLift** командой
+`git submodule update --init --recursive` (см. раздел о Git ниже).
 Без него сборка не пройдёт. Веса, фотографии, `.env` и SSH-ключи исключены из
 контекста сборки; небольшой `clr_embeds.pt` из репозитория FaceLift включён.
 
@@ -452,15 +452,14 @@ python -m metology_worker --env-file .env check-db
 Пока локальное фото и подключение очереди не проверены, используйте foreground
 команду `run`. В WSL2 для отладки systemd не обязателен.
 
-## Git: два отдельных проекта
+## Git: подмодуль FaceLift
 
-`worker_processors/FaceLift/` исключён из Git воркера; у FaceLift свой `.git`.
-При первом создании репозитория воркера:
+`worker_processors/FaceLift/` подключён как Git-подмодуль из
+`git@github.com:FiksII/FaceLift.git`. Репозиторий воркера фиксирует конкретный
+коммит FaceLift. После клонирования воркера загрузите подмодуль:
 
 ```bash
-git init
-git add .
-git commit -m "Add Metology FaceLift worker"
+git submodule update --init --recursive
 ```
 
 Изменение адаптерного API FaceLift фиксируется отдельно:
@@ -470,9 +469,18 @@ git -C worker_processors/FaceLift add inference.py
 git -C worker_processors/FaceLift commit -m "Add cancellable PLY-only inference API"
 ```
 
-На сервер нужно клонировать **оба ваших репозитория**, включая изменённый
-FaceLift; исходный upstream без этих изменений не содержит `ply_only`.
-Внешний Git clone не загрузит вложенный проект автоматически.
+После коммита в FaceLift обновите ссылку в репозитории воркера:
+
+```bash
+git add worker_processors/FaceLift
+git commit -m "Update FaceLift submodule"
+```
+
+На сервере используйте `git clone --recurse-submodules` или выполните
+`git submodule update --init --recursive` после обычного клонирования.
+Для загрузки нужен SSH-доступ к репозиторию FaceLift. Изменения FaceLift
+публикуются отдельно до публикации обновлённой ссылки в воркере.
+Исходный upstream без изменений адаптерного API не содержит `ply_only`.
 Веса, `.env`, `.venv`, фотографии и результаты не включать в коммиты.
 
 ## Проверки

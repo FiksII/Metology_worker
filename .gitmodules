@@ -1,0 +1,3 @@
+[submodule "worker_processors/FaceLift"]
+	path = worker_processors/FaceLift
+	url = git@github.com:FiksII/FaceLift.git

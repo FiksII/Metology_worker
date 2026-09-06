@@ -1,4 +1,3 @@
-/worker_processors/FaceLift/
 .venv/
 __pycache__/
 *.py[cod]
