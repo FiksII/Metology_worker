@@ -14,6 +14,7 @@ services:
     env_file:
       - ${WORKER_ENV_FILE:-.env}
     environment:
+      AWS_REQUEST_CHECKSUM_CALCULATION: when_required
       FACELIFT_PATH: /opt/worker/worker_processors/FaceLift
       WORKER_TEMP_ROOT: /var/lib/metology-worker/tmp
     init: true

@@ -11,5 +11,6 @@ dist/
 .env.*
 !.env.example
 /outputs/
+/deploy-smoke/
 /worker-temp/
 /installed-requirements.txt
