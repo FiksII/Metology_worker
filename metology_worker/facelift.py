@@ -12,6 +12,17 @@ from .runtime import WorkerError
 LOG = logging.getLogger(__name__)
 
 
+def configure_attention_backend(torch):
+    """Avoid xformers 0.0.30 dispatching Hopper-only Flash3 kernels on Blackwell."""
+    if torch.cuda.get_device_capability(0)[0] < 10:
+        return
+    import xformers
+    if xformers.__version__.split('+', 1)[0] == '0.0.30':
+        from xformers.ops.fmha.dispatch import _set_use_fa3
+        _set_use_fa3(False)
+        LOG.info('xformers_flash3_disabled_for_blackwell')
+
+
 class FaceLiftEngine:
     def __init__(self, root):
         root = Path(root).resolve()
@@ -22,6 +33,7 @@ class FaceLiftEngine:
         if not torch.cuda.is_available():
             raise RuntimeError('cuda_unavailable')
         self.torch = torch
+        configure_attention_backend(torch)
         self.module = importlib.import_module('inference')
         if Path(self.module.__file__).resolve() != root / 'inference.py':
             raise RuntimeError('wrong_inference_module')

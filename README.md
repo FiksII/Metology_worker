@@ -29,6 +29,10 @@ chmod 600 .env
 для RTX 50 / Blackwell. Для RTX 20/30/40 и исходного стека FaceLift задайте
 `CUDA_PROFILE=cu124`. GPU выбирается через `GPU_DEVICE_ID=0`.
 Профиль `cu128` ещё требует проверки реального инференса на целевой GPU.
+Для xformers 0.0.30 на Blackwell воркер отключает выбор Hopper-only FlashAttention 3:
+иначе возникает `no kernel image is available`. Остальные реализации внимания
+выбираются xformers автоматически. Причина описана в
+[upstream issue](https://github.com/facebookresearch/xformers/issues/1251).
 
 ### Если PostgreSQL подключается через SSH
 
@@ -200,6 +204,10 @@ docker compose run --rm -v "$PWD/photo.jpg:/input/photo.jpg:ro" -v "$PWD/outputs
 (для SSH добавьте оба `-f`). Отдельная лёгкая сборка запускает CPU-тесты без
 CUDA и весов: `docker build --target test -t metology-worker:cpu-test .`.
 Она не заменяет проверку GPU и создание настоящего PLY.
+Опциональный тест GPU (в установленном CUDA-окружении) запускается командой
+`WORKER_TEST_GPU=1 python -m unittest discover -s tests -p test_gpu.py -v`.
+Он сравнивает результат внимания с эталонным расчётом, выполняет CUDA-rasterizer
+и импортирует FaceLift без загрузки весов реконструкции.
 
 ## Как связаны проекты
 
@@ -273,7 +281,7 @@ bash scripts/install.sh cu124
 bash scripts/install.sh cu128
 ```
 
-Профили: `cu124` = PyTorch 2.4.0 / torchvision 0.19.0 / xformers 0.0.27.post2;
+Профили: `cu124` = PyTorch 2.4.1 / torchvision 0.19.1 / xformers 0.0.28.post1;
 `cu128` = PyTorch 2.7.0 / torchvision 0.22.0 / xformers 0.0.30.
 Поддержка Blackwell и CUDA 12.8 появилась в
 [PyTorch 2.7](https://pytorch.org/blog/pytorch-2-7/).

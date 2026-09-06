@@ -28,7 +28,7 @@ fi
 .venv/bin/python -m pip install -e '.[dev]'
 if [[ "$PROFILE" != worker-only ]]; then
   if [[ "$PROFILE" == cu124 ]]; then
-    .venv/bin/python -m pip install torch==2.4.0 torchvision==0.19.0 xformers==0.0.27.post2 \
+    .venv/bin/python -m pip install torch==2.4.1 torchvision==0.19.1 xformers==0.0.28.post1 \
       --index-url https://download.pytorch.org/whl/cu124
   else
     .venv/bin/python -m pip install torch==2.7.0 torchvision==0.22.0 xformers==0.0.30 \
