@@ -4,6 +4,25 @@ from metology_worker.config import Config
 
 
 class ConfigTests(unittest.TestCase):
+    def test_worker_processor_defaults_to_facelift(self):
+        with patch.dict('os.environ', {}, clear=True):
+            config = Config.load()
+        self.assertEqual(config.processors, ('facelift',))
+        self.assertEqual(config.supported_job_types, ('photo_3D_fl',))
+
+    def test_worker_processor_accepts_multiple_pipe_separated_processors(self):
+        with patch.dict('os.environ', {'WORKER_PROCESSOR': 'orbithead|facelift'}, clear=True):
+            config = Config.load()
+        self.assertEqual(config.processors, ('orbithead', 'facelift'))
+        self.assertEqual(config.supported_job_types, ('OrbitHead', 'photo_3D_fl'))
+
+    def test_worker_processor_rejects_unknown_or_empty_values(self):
+        for value in ['', 'unknown', 'orbithead||unknown']:
+            with self.subTest(value=value):
+                with patch.dict('os.environ', {'WORKER_PROCESSOR': value}, clear=True):
+                    with self.assertRaisesRegex(ValueError, 'invalid_worker_processor'):
+                        Config.load()
+
     def test_notify_channel_defaults_to_contract_and_can_be_overridden(self):
         with patch.dict('os.environ', {}, clear=True):
             self.assertEqual(Config.load().notify_channel, 'metology_jobs')

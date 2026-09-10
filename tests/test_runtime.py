@@ -1,4 +1,5 @@
 import hashlib
+import struct
 import tempfile
 import time
 import unittest
@@ -67,6 +68,15 @@ class Engine:
         target.write_bytes(b'ply\nformat binary_little_endian 1.0\nend_header\n123')
 
 
+class GlbEngine:
+    result_format = 'glb'
+
+    def reconstruct(self, source, target, stage, check):
+        check()
+        stage('exporting_ply')
+        target.write_bytes(b'glTF' + struct.pack('<II', 2, 12))
+
+
 class RuntimeTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -83,6 +93,12 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(self.db.outcomes, [('complete', len(data), hashlib.sha256(data).hexdigest())])
         self.assertEqual(list(self.root.iterdir()), [])
         self.assertEqual(self.db.stages[:4], ['downloading', 'processing', 'exporting_ply', 'uploading_result'])
+
+    def test_glb_result_uploads_then_completes_with_digest(self):
+        self.assertEqual(self.run_job(GlbEngine()), 'succeeded')
+        data = self.storage.objects['assigned/result.ply']
+        self.assertTrue(data.startswith(b'glTF'))
+        self.assertEqual(self.db.outcomes, [('complete', len(data), hashlib.sha256(data).hexdigest())])
 
     def test_cancel_does_not_publish(self):
         self.db.cancel = True

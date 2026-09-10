@@ -6,12 +6,14 @@ FROM python:3.10-slim-bookworm AS worker-only
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     FACELIFT_PATH=/opt/worker/worker_processors/FaceLift \
+    ORBITHEAD_PATH=/opt/worker/worker_processors/orbithead \
     WORKER_TEMP_ROOT=/var/lib/metology-worker/tmp
 WORKDIR /opt/worker
 COPY pyproject.toml ./
 COPY metology_worker/ ./metology_worker/
 RUN --mount=type=cache,target=/root/.cache/pip python -m pip install .
 COPY worker_processors/FaceLift/ ./worker_processors/FaceLift/
+COPY worker_processors/orbithead/ ./worker_processors/orbithead/
 ENTRYPOINT ["python", "-m", "metology_worker"]
 CMD ["run"]
 
@@ -34,6 +36,11 @@ ENV DEBIAN_FRONTEND=noninteractive \
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates python3.10 python3.10-venv python3.10-dev \
       build-essential git ffmpeg libgl1 libglib2.0-0 \
+      cmake ninja-build pkg-config libboost-all-dev libeigen3-dev \
+      libflann-dev libfreeimage-dev libmetis-dev libgoogle-glog-dev \
+      libgflags-dev libsqlite3-dev libglew-dev libceres-dev libcgal-dev \
+      libcurl4-openssl-dev libssl-dev libopencv-dev libnanoflann-dev \
+      libglu1-mesa-dev libglfw3-dev libpng-dev libjpeg-dev libtiff-dev libegl1 \
     && rm -rf /var/lib/apt/lists/* \
     && python3.10 -m venv /opt/venv
 RUN --mount=type=cache,target=/root/.cache/pip \
@@ -58,21 +65,52 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     TORCH_CUDA_ARCH_LIST="${CUDA_ARCH_LIST:-$DEFAULT_CUDA_ARCH_LIST}" MAX_JOBS="$MAX_JOBS" \
     python -m pip install --no-build-isolation \
       "git+https://github.com/graphdeco-inria/diff-gaussian-rasterization@${RASTERIZER_REF}"
+ARG ORBITHEAD_CUDA_ARCH=86
+ARG ORBITHEAD_BUILD_JOBS=2
+RUN git clone --branch 3.12.6 --depth 1 https://github.com/colmap/colmap.git /tmp/colmap \
+    && cmake -S /tmp/colmap -B /tmp/colmap/build -GNinja -DCMAKE_BUILD_TYPE=Release \
+      -DGUI_ENABLED=OFF -DCMAKE_CUDA_ARCHITECTURES=${ORBITHEAD_CUDA_ARCH} -DCUDA_ENABLED=ON \
+    && cmake --build /tmp/colmap/build -j"${ORBITHEAD_BUILD_JOBS}" \
+    && cmake --install /tmp/colmap/build \
+    && rm -rf /tmp/colmap
+RUN git clone --depth 1 https://github.com/cdcseacave/VCG.git /opt/vcglib \
+    && git clone --branch v2.3.0 --depth 1 https://github.com/cdcseacave/openMVS.git /tmp/openMVS \
+    && cmake -S /tmp/openMVS -B /tmp/openMVS/build -DCMAKE_BUILD_TYPE=Release \
+      -DVCG_ROOT=/opt/vcglib -DOpenMVS_USE_CUDA=ON \
+      -DCMAKE_CUDA_ARCHITECTURES=${ORBITHEAD_CUDA_ARCH} \
+      -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc -DOpenMVS_USE_OPENMP=ON \
+      -DOpenMVS_USE_PYTHON=OFF -DOpenMVS_ENABLE_TESTS=OFF -DCMAKE_INSTALL_PREFIX=/opt/openmvs \
+      -DCUDA_CUDA_LIBRARY=/usr/local/cuda/lib64/stubs/libcuda.so \
+      "-DCMAKE_CXX_FLAGS=-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0" \
+      "-DCMAKE_C_FLAGS=-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0" \
+    && cmake --build /tmp/openMVS/build -j"${ORBITHEAD_BUILD_JOBS}" \
+    && cmake --install /tmp/openMVS/build \
+    && rm -rf /tmp/openMVS
 
 FROM gpu-dependencies AS gpu
 ENV FACELIFT_PATH=/opt/worker/worker_processors/FaceLift \
+    ORBITHEAD_PATH=/opt/worker/worker_processors/orbithead \
+    OPENMVS_BIN=/opt/openmvs/bin/OpenMVS \
     WORKER_TEMP_ROOT=/var/lib/metology-worker/tmp \
     HF_HOME=/root/.cache/huggingface \
-    U2NET_HOME=/root/.cache/u2net
+    U2NET_HOME=/root/.cache/u2net \
+    PYOPENGL_PLATFORM=egl \
+    NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics
 WORKDIR /opt/worker
 COPY pyproject.toml ./
 COPY metology_worker/ ./metology_worker/
 RUN --mount=type=cache,target=/root/.cache/pip \
-    python -m pip install . \
-    && python -m pip freeze > /opt/worker/installed-requirements.txt
+    python -m pip install .
 COPY worker_processors/FaceLift/ ./worker_processors/FaceLift/
+COPY worker_processors/orbithead/ ./worker_processors/orbithead/
+RUN --mount=type=cache,target=/root/.cache/pip \
+    python -m pip install './worker_processors/orbithead[preview]' \
+    && python -c "from rembg import new_session; new_session('u2net_human_seg')" \
+    && python -m pip freeze > /opt/worker/installed-requirements.txt
 RUN test -f "$FACELIFT_PATH/inference.py" \
+    && test -f "$ORBITHEAD_PATH/orbithead/pipeline.py" \
     && test -f "$FACELIFT_PATH/mvdiffusion/data/fixed_prompt_embeds_6view/clr_embeds.pt" \
+    && test -f "$OPENMVS_BIN/DensifyPointCloud" \
     && mkdir -p "$FACELIFT_PATH/checkpoints" "$WORKER_TEMP_ROOT" /root/.cache
 ENTRYPOINT ["python", "-m", "metology_worker"]
 CMD ["run"]

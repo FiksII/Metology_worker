@@ -11,7 +11,7 @@ import time
 import uuid
 from pathlib import Path
 
-from .config import Config
+from .config import Config, PROCESSOR_JOB_TYPES
 from .runtime import file_metadata, run_attempt
 
 LOG = logging.getLogger('metology_worker')
@@ -22,51 +22,81 @@ def doctor(config):
     checks = {
         'Linux / WSL2': platform.system() == 'Linux',
         'Python 3.10': sys.version_info[:2] == (3, 10),
-        'FaceLift checkout': (config.facelift_path / 'inference.py').is_file(),
-        'CUDA compiler (nvcc)': shutil.which('nvcc') is not None,
-        'ffmpeg': shutil.which('ffmpeg') is not None,
     }
-    for name in ['torch', 'psycopg', 'boto3', 'PIL', 'pillow_heif', 'diff_gaussian_rasterization', 'onnxruntime']:
+    if 'facelift' in config.processors:
+        checks['FaceLift checkout'] = (config.facelift_path / 'inference.py').is_file()
+        checks['CUDA compiler (nvcc)'] = shutil.which('nvcc') is not None
+        checks['ffmpeg'] = shutil.which('ffmpeg') is not None
+        for name in ['torch', 'psycopg', 'boto3', 'PIL', 'pillow_heif',
+                     'diff_gaussian_rasterization', 'onnxruntime']:
+            checks[name] = importlib.util.find_spec(name) is not None
+        if checks['torch']:
+            import torch
+            checks['CUDA accessible'] = torch.cuda.is_available()
+        for relative in ['checkpoints/mvdiffusion/pipeckpts', 'checkpoints/gslrm/ckpt_0000000000021125.pt',
+                         'mvdiffusion/data/fixed_prompt_embeds_6view/clr_embeds.pt']:
+            checks[relative] = (config.facelift_path / relative).exists()
+    if 'orbithead' in config.processors:
+        checks['OrbitHead checkout'] = (config.orbithead_path / 'orbithead' / 'pipeline.py').is_file()
+        checks['ffmpeg'] = shutil.which('ffmpeg') is not None
+        checks['COLMAP'] = shutil.which('colmap') is not None
+        openmvs = os.environ.get('OPENMVS_BIN')
+        checks['OpenMVS'] = bool(openmvs and (Path(openmvs) / 'DensifyPointCloud').is_file()) or (
+            shutil.which('DensifyPointCloud') is not None
+        )
+        for name in ['numpy', 'cv2', 'PIL', 'trimesh', 'scipy', 'rembg', 'skimage', 'onnxruntime']:
+            checks[name] = importlib.util.find_spec(name) is not None
+    for name in ['psycopg', 'boto3']:
         checks[name] = importlib.util.find_spec(name) is not None
     if config.ssh.enabled:
         checks['asyncssh'] = importlib.util.find_spec('asyncssh') is not None
         checks['SSH private key'] = bool(config.ssh.key_path and config.ssh.key_path.is_file())
         checks['SSH known_hosts'] = config.ssh.known_hosts.is_file()
-    if checks['torch']:
-        import torch
-        checks['CUDA accessible'] = torch.cuda.is_available()
-    for relative in ['checkpoints/mvdiffusion/pipeckpts', 'checkpoints/gslrm/ckpt_0000000000021125.pt',
-                     'mvdiffusion/data/fixed_prompt_embeds_6view/clr_embeds.pt']:
-        checks[relative] = (config.facelift_path / relative).exists()
     for name, ok in checks.items():
         print(f'{"OK" if ok else "MISSING"}: {name}')
     return 0 if all(checks.values()) else 1
 
 
+def create_engines(config):
+    engines = {}
+    for processor in config.processors:
+        job_type = PROCESSOR_JOB_TYPES[processor]
+        if processor == 'facelift':
+            from .facelift import FaceLiftEngine
+            engines[job_type] = FaceLiftEngine(config.facelift_path)
+        elif processor == 'orbithead':
+            from .orbithead import OrbitHeadEngine
+            engines[job_type] = OrbitHeadEngine(config.orbithead_path)
+        else:
+            raise ValueError('invalid_worker_processor')
+    return engines
+
+
 def infer_local(config, source, output):
-    from .facelift import FaceLiftEngine
+    if len(config.processors) != 1:
+        raise ValueError('infer_local_requires_single_processor')
     if output.exists():
         raise ValueError('output_already_exists')
     if not source.is_file():
         raise ValueError('input_file_missing')
-    engine = FaceLiftEngine(config.facelift_path)
+    engine = next(iter(create_engines(config).values()))
     config.temp_root.mkdir(parents=True, exist_ok=True, mode=0o700)
     with tempfile.TemporaryDirectory(prefix='local-', dir=config.temp_root) as directory:
         local = Path(directory) / 'input'
-        result = Path(directory) / 'result.ply'
+        result_format = getattr(engine, 'result_format', 'ply')
+        result = Path(directory) / f'result.{result_format}'
         shutil.copyfile(source, local)
         engine.reconstruct(local, result, lambda stage: LOG.info('stage=%s', stage), lambda: None)
-        size, digest = file_metadata(result)
+        size, digest = file_metadata(result, result_format)
         output.parent.mkdir(parents=True, exist_ok=True)
         with output.open('xb') as destination, result.open('rb') as generated:
             shutil.copyfileobj(generated, destination)
-        print(f'PLY: {output}\nBytes: {size}\nSHA-256: {digest}')
+        print(f'Result: {output}\nBytes: {size}\nSHA-256: {digest}')
     return 0
 
 
 def run(config):
     from .database import create_database
-    from .facelift import FaceLiftEngine
     from .service import consume_queue, listener_factory
     from .storage import create_storage
     from .tempfiles import process_directory
@@ -92,16 +122,19 @@ def run(config):
             return 0
         db = create_database(db_config, check_ready)
         db.check_version()
-        engine = FaceLiftEngine(config.facelift_path)
+        engines = create_engines(config)
         storage = create_storage(config)
         with process_directory(config.temp_root, worker_id) as root:
             def execute(a):
                 if (a['input_bucket'] != config.s3_bucket or a['result_bucket'] != config.s3_bucket
                         or a['input_size_bytes'] <= 0 or a['parameters'] != {}):
                     raise RuntimeError('invalid_claim_configuration')
+                engine = engines.get(a['job_type'])
+                if engine is None:
+                    raise RuntimeError('invalid_claim_protocol')
                 outcome = run_attempt(db, storage, engine, a, root, lambda: deadline[0])
                 LOG.info('attempt_outcome=%s', outcome)
-            LOG.info('worker_ready')
+            LOG.info('worker_ready processors=%s', ','.join(config.processors))
             consume_queue(db, listener_factory(db_config, check_ready), worker_id, stopped, execute)
     return 0
 
@@ -118,13 +151,13 @@ def check_database(config):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description='Metology FaceLift worker (Linux / WSL2)')
+    parser = argparse.ArgumentParser(description='Metology worker (Linux / WSL2)')
     parser.add_argument('--env-file', type=Path, help='Optional local dotenv file; existing environment wins')
     commands = parser.add_subparsers(dest='command', required=True)
     commands.add_parser('doctor', help='Check environment and model files without database access')
     commands.add_parser('run', help='Consume worker_api/v1 jobs')
     commands.add_parser('check-db', help='Check PostgreSQL worker_api/v1, including optional SSH tunnel')
-    local = commands.add_parser('infer-local', help='Generate PLY from one photo without PostgreSQL/S3')
+    local = commands.add_parser('infer-local', help='Generate one local result without PostgreSQL/S3')
     local.add_argument('input', type=Path)
     local.add_argument('output', type=Path)
     args = parser.parse_args(argv)

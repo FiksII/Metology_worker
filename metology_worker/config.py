@@ -6,6 +6,25 @@ from urllib.parse import urlsplit
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_KNOWN_HOSTS = Path.home() / '.ssh/known_hosts'
+PROCESSOR_JOB_TYPES = {
+    'facelift': 'photo_3D_fl',
+    'orbithead': 'OrbitHead',
+}
+
+
+def parse_processors(value):
+    processors = []
+    for raw in re.split(r'[|,\s]+', value):
+        name = raw.strip().lower()
+        if not name:
+            continue
+        if name not in PROCESSOR_JOB_TYPES:
+            raise ValueError('invalid_worker_processor')
+        if name not in processors:
+            processors.append(name)
+    if not processors:
+        raise ValueError('invalid_worker_processor')
+    return tuple(processors)
 
 
 @dataclass
@@ -54,6 +73,7 @@ class SSHConfig:
 @dataclass
 class Config:
     facelift_path: Path
+    orbithead_path: Path
     temp_root: Path
     database_url: str = field(repr=False)
     s3_endpoint: str
@@ -65,23 +85,34 @@ class Config:
     insecure: bool = False
     shutdown_seconds: int = 300
     notify_channel: str = 'metology_jobs'
+    processors: tuple[str, ...] = ('facelift',)
     ssh: SSHConfig = field(default_factory=SSHConfig)
 
     def __post_init__(self):
         if not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]{0,62}', self.notify_channel):
             raise ValueError('invalid_notify_channel')
+        if not self.processors or any(name not in PROCESSOR_JOB_TYPES for name in self.processors):
+            raise ValueError('invalid_worker_processor')
+
+    @property
+    def supported_job_types(self):
+        return tuple(PROCESSOR_JOB_TYPES[name] for name in self.processors)
 
     @classmethod
     def load(cls):
         env = os.environ
         return cls(
-            Path(env.get('FACELIFT_PATH', PROJECT_ROOT / 'worker_processors/FaceLift')).expanduser().resolve(),
-            Path(env.get('WORKER_TEMP_ROOT', PROJECT_ROOT / 'worker-temp')).expanduser().resolve(),
-            env.get('DATABASE_URL', ''), env.get('S3_ENDPOINT_URL', ''), env.get('S3_BUCKET', ''),
-            env.get('S3_ACCESS_KEY_ID', ''), env.get('S3_SECRET_ACCESS_KEY', ''),
-            env.get('S3_REGION', 'us-east-1'), env.get('S3_ADDRESSING_STYLE', 'path'),
-            env.get('WORKER_ALLOW_INSECURE') == '1', int(env.get('WORKER_SHUTDOWN_SECONDS', '300')),
+            facelift_path=Path(env.get('FACELIFT_PATH', PROJECT_ROOT / 'worker_processors/FaceLift')).expanduser().resolve(),
+            orbithead_path=Path(env.get('ORBITHEAD_PATH', PROJECT_ROOT / 'worker_processors/orbithead')).expanduser().resolve(),
+            temp_root=Path(env.get('WORKER_TEMP_ROOT', PROJECT_ROOT / 'worker-temp')).expanduser().resolve(),
+            database_url=env.get('DATABASE_URL', ''), s3_endpoint=env.get('S3_ENDPOINT_URL', ''),
+            s3_bucket=env.get('S3_BUCKET', ''), s3_access_key=env.get('S3_ACCESS_KEY_ID', ''),
+            s3_secret_key=env.get('S3_SECRET_ACCESS_KEY', ''), s3_region=env.get('S3_REGION', 'us-east-1'),
+            s3_addressing_style=env.get('S3_ADDRESSING_STYLE', 'path'),
+            insecure=env.get('WORKER_ALLOW_INSECURE') == '1',
+            shutdown_seconds=int(env.get('WORKER_SHUTDOWN_SECONDS', '300')),
             notify_channel=env.get('DATABASE_NOTIFY_CHANNEL', 'metology_jobs'),
+            processors=parse_processors(env.get('WORKER_PROCESSOR', 'facelift')),
             ssh=SSHConfig.load(),
         )
 

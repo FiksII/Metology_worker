@@ -11,11 +11,15 @@ services:
         CUDA_PROFILE: ${CUDA_PROFILE:-cu128}
         CUDA_ARCH_LIST: ${CUDA_ARCH_LIST:-}
         MAX_JOBS: ${DOCKER_BUILD_JOBS:-2}
+        ORBITHEAD_CUDA_ARCH: ${ORBITHEAD_CUDA_ARCH:-86}
+        ORBITHEAD_BUILD_JOBS: ${ORBITHEAD_BUILD_JOBS:-2}
     env_file:
       - ${WORKER_ENV_FILE:-.env}
     environment:
       AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+      WORKER_PROCESSOR: ${WORKER_PROCESSOR:-facelift}
       FACELIFT_PATH: /opt/worker/worker_processors/FaceLift
+      ORBITHEAD_PATH: /opt/worker/worker_processors/orbithead
       WORKER_TEMP_ROOT: /var/lib/metology-worker/tmp
     init: true
     restart: unless-stopped

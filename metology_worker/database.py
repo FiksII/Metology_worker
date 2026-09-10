@@ -3,8 +3,9 @@ from contextlib import contextmanager
 
 
 class Database:
-    def __init__(self, connect):
+    def __init__(self, connect, supported_types=('photo_3D_fl',)):
         self.connect = connect
+        self.supported_types = tuple(supported_types)
 
     def call(self, function, args=(), casts=None):
         placeholders = ', '.join(casts or ['%s'] * len(args))
@@ -19,8 +20,8 @@ class Database:
             raise RuntimeError('unsupported_worker_protocol')
 
     def claim(self, worker_id):
-        row = self.call('claim_job_v1', (worker_id, ['photo_3D_fl']), ['%s::uuid', '%s::text[]'])
-        if row is not None and (row['protocol_version'] != 1 or row['job_type'] != 'photo_3D_fl'):
+        row = self.call('claim_job_v1', (worker_id, list(self.supported_types)), ['%s::uuid', '%s::text[]'])
+        if row is not None and (row['protocol_version'] != 1 or row['job_type'] not in self.supported_types):
             raise RuntimeError('invalid_claim_protocol')
         return row
 
@@ -58,4 +59,4 @@ def create_database(config, check_ready=lambda: None):
         except (psycopg.OperationalError, psycopg.InterfaceError):
             raise ConnectionError('database_unavailable') from None
 
-    return Database(connect)
+    return Database(connect, config.supported_job_types)

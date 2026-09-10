@@ -1,14 +1,16 @@
-# Metology FaceLift worker
+# Metology worker
 
 Воркер для Linux с NVIDIA GPU. WSL2 Ubuntu подходит для локальной отладки.
-Он забирает `photo_3D_fl` из PostgreSQL через `worker_api/v1`, скачивает фото из
-закрытого S3 bucket, вызывает FaceLift и загружает бинарный PLY.
+Он забирает задания из PostgreSQL через `worker_api/v1`, скачивает input из
+закрытого S3 bucket, вызывает выбранный processor и загружает результат обратно
+в S3. Сейчас поддерживаются `photo_3D_fl` через FaceLift и `OrbitHead` через
+OrbitHead.
 
 ## Быстрый запуск в Docker
 
-Образ содержит Python 3.10, CUDA toolkit, PyTorch, зависимости воркера и код
-вашего FaceLift. На хосте нужны Docker Compose v2+, NVIDIA driver и доступ GPU
-из контейнеров. Для Linux настройте
+Образ содержит Python 3.10, CUDA toolkit, PyTorch, зависимости воркера, FaceLift
+и OrbitHead с COLMAP/OpenMVS. На хосте нужны Docker Compose v2+, NVIDIA driver
+и доступ GPU из контейнеров. Для Linux настройте
 [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html);
 для Windows используйте Docker Desktop с WSL2 и Linux containers.
 CUDA toolkit и Python на хосте при таком запуске не нужны.
@@ -17,6 +19,8 @@ CUDA toolkit и Python на хосте при таком запуске не н�
 `git submodule update --init --recursive` (см. раздел о Git ниже).
 Без него сборка не пройдёт. Веса, фотографии, `.env` и SSH-ключи исключены из
 контекста сборки; небольшой `clr_embeds.pt` из репозитория FaceLift включён.
+OrbitHead лежит в `worker_processors/orbithead` и устанавливается в этот же
+Docker-образ.
 
 ```bash
 cp .env.example .env
@@ -33,6 +37,20 @@ chmod 600 .env
 иначе возникает `no kernel image is available`. Остальные реализации внимания
 выбираются xformers автоматически. Причина описана в
 [upstream issue](https://github.com/facebookresearch/xformers/issues/1251).
+
+### Выбор processor/job type
+
+`WORKER_PROCESSOR` задаёт, какие типы заданий этот процесс будет claim'ить:
+
+```dotenv
+WORKER_PROCESSOR=orbithead          # только OrbitHead
+WORKER_PROCESSOR=facelift           # только photo_3D_fl
+WORKER_PROCESSOR=orbithead|facelift # оба типа в одном процессе
+```
+
+Значение можно разделять `|`, запятыми или пробелами. При `orbithead` воркер
+передаёт в `claim_job_v1` тип `OrbitHead` и загружает один GLB-файл. При
+`facelift` остаётся прежний тип `photo_3D_fl` и PLY-результат.
 
 ### Если PostgreSQL подключается через SSH
 
@@ -162,6 +180,9 @@ docker compose run --rm --entrypoint nvidia-smi worker-gpu-1
 `DOCKER_BUILD_JOBS=2` ограничивает параллелизм компиляции. Архитектуры по умолчанию:
 `cu124` — `7.5;8.0;8.6;8.9;9.0+PTX`, `cu128` — `10.0;12.0+PTX`.
 Для сборки только под RTX 50 можно задать `CUDA_ARCH_LIST=12.0`.
+OrbitHead дополнительно собирает COLMAP/OpenMVS; `ORBITHEAD_BUILD_JOBS=2`
+ограничивает параллелизм, а `ORBITHEAD_CUDA_ARCH=86` задаёт compute capability
+для COLMAP/OpenMVS.
 Расширение собирается без GPU; доступ GPU нужен при запуске.
 Зависимости кэшируются отдельно от кода. Rasterizer закреплён на Git commit,
 а фактические версии пакетов записаны в `/opt/worker/installed-requirements.txt`.
@@ -188,13 +209,15 @@ docker compose run --rm -v "$PWD/photo.jpg:/input/photo.jpg:ro" -v "$PWD/outputs
 ```
 
 Файл `photo.jpg` должен существовать, `result.ply` не должен существовать.
+Для локальной проверки OrbitHead задайте `WORKER_PROCESSOR=orbithead` и передайте
+видео вместо фото, например `/input/capture.mov`, а output назовите `result.glb`.
 В PowerShell используйте `${PWD}/photo.jpg` и `${PWD}/outputs` в аргументах `-v`.
 Контейнер запускается от root, чтобы читать закрытый SSH-ключ через bind mount.
 На Linux результат локального инференса также принадлежит root; при необходимости
 передайте его своему пользователю: `sudo chown "$(id -u):$(id -g)" outputs/result.ply`.
 При SSH добавляйте `-f compose.yaml -f compose.ssh.yaml` ко всем командам Compose
 в этом разделе, включая остановку и обновление.
-После обновления checkout воркера или FaceLift: `docker compose up -d --build`.
+После обновления checkout воркера, FaceLift или OrbitHead: `docker compose up -d --build`.
 Остановка: `docker compose down`; контейнер даёт воркеру 330 секунд на завершение.
 Если увеличиваете `WORKER_SHUTDOWN_SECONDS`, увеличьте `WORKER_STOP_GRACE_PERIOD`
 ещё минимум на 30 секунд. `restart: unless-stopped` восстанавливает процесс
@@ -203,7 +226,7 @@ docker compose run --rm -v "$PWD/photo.jpg:/input/photo.jpg:ro" -v "$PWD/outputs
 Для проверки конфигурации без вывода секретов: `docker compose config --quiet`
 (для SSH добавьте оба `-f`). Отдельная лёгкая сборка запускает CPU-тесты без
 CUDA и весов: `docker build --target test -t metology-worker:cpu-test .`.
-Она не заменяет проверку GPU и создание настоящего PLY.
+Она не заменяет проверку GPU и создание настоящего PLY/GLB.
 Опциональный тест GPU (в установленном CUDA-окружении) запускается командой
 `WORKER_TEST_GPU=1 python -m unittest discover -s tests -p test_gpu.py -v`.
 Он сравнивает результат внимания с эталонным расчётом, выполняет CUDA-rasterizer
@@ -217,9 +240,13 @@ worker/                         отдельный Git-репозиторий в
 ├── scripts/install.sh
 ├── .env.example
 └── worker_processors/
-    └── FaceLift/                отдельный Git-репозиторий FaceLift
-        ├── inference.py
-        ├── checkpoints/
+    ├── FaceLift/                отдельный Git-репозиторий FaceLift
+    │   ├── inference.py
+    │   ├── checkpoints/
+    │   └── ...
+    └── orbithead/               processor OrbitHead
+        ├── orbithead/
+        ├── Dockerfile
         └── ...
 ```
 

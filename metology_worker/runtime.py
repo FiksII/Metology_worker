@@ -1,6 +1,7 @@
 """Attempt ownership and lifecycle, independent of CUDA and network libraries."""
 import hashlib
 import logging
+import struct
 import tempfile
 import threading
 import time
@@ -114,14 +115,23 @@ class LeaseGuard:
         self.thread.join()
 
 
-def file_metadata(path):
+def file_metadata(path, result_format='ply'):
     size = path.stat().st_size
     with path.open('rb') as stream:
         header = stream.read(4096)
-        if not header.startswith(b'ply\n') and not header.startswith(b'ply\r\n'):
-            raise WorkerError('result_invalid', False)
-        if b'format binary_' not in header:
-            raise WorkerError('result_invalid', False)
+        if result_format == 'ply':
+            if not header.startswith(b'ply\n') and not header.startswith(b'ply\r\n'):
+                raise WorkerError('result_invalid', False)
+            if b'format binary_' not in header:
+                raise WorkerError('result_invalid', False)
+        elif result_format == 'glb':
+            if len(header) < 12 or not header.startswith(b'glTF'):
+                raise WorkerError('result_invalid', False)
+            version, declared_size = struct.unpack('<II', header[4:12])
+            if version != 2 or declared_size != size:
+                raise WorkerError('result_invalid', False)
+        else:
+            raise ValueError('invalid_result_format')
         stream.seek(0)
         digest = hashlib.sha256()
         for chunk in iter(lambda: stream.read(1024 * 1024), b''):
@@ -148,13 +158,14 @@ def run_attempt(db, storage, engine, assignment, root, shutdown_deadline=None):
             try:
                 root.mkdir(parents=True, exist_ok=True)
                 directory = files.enter_context(tempfile.TemporaryDirectory(prefix='attempt-', dir=root))
-                source, result = Path(directory) / 'input', Path(directory) / 'result.ply'
+                result_format = getattr(engine, 'result_format', 'ply')
+                source, result = Path(directory) / 'input', Path(directory) / f'result.{result_format}'
                 guard.stage('downloading')
                 storage.download(assignment, source, guard.check)
                 guard.stage('processing')
                 engine.reconstruct(source, result, guard.stage, guard.check)
                 guard.check()
-                size, digest = file_metadata(result)
+                size, digest = file_metadata(result, result_format)
                 guard.stage('uploading_result')
                 uploaded = True  # Includes a PUT whose response is lost.
                 storage.upload(assignment, result, guard.check)
