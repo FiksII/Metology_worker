@@ -1,3 +1,6 @@
 [submodule "worker_processors/FaceLift"]
 	path = worker_processors/FaceLift
 	url = git@github.com:FiksII/FaceLift.git
+[submodule "worker_processors/orbithead"]
+	path = worker_processors/orbithead
+	url = git@github.com:FiksII/orbithead.git
