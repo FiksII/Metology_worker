@@ -21,6 +21,8 @@ worker_processors/FaceLift/**
 !worker_processors/FaceLift/mvdiffusion/**
 !worker_processors/FaceLift/utils_folder/
 !worker_processors/FaceLift/utils_folder/**
+!worker_processors/orbithead/
+!worker_processors/orbithead/**
 **/__pycache__/
 **/*.py[cod]
 **/.git/

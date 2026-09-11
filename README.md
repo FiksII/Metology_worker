@@ -206,15 +206,16 @@ mkdir -p outputs
 docker compose run --rm --entrypoint nvidia-smi worker
 docker compose run --rm worker doctor
 docker compose run --rm -v "$PWD/photo.jpg:/input/photo.jpg:ro" -v "$PWD/outputs:/output" worker infer-local /input/photo.jpg /output/result.ply
+# OrbitHead:
+docker compose run --rm -e WORKER_PROCESSOR=orbithead -v "$PWD/capture.mov:/input/capture.mov:ro" -v "$PWD/outputs:/output" worker infer-local /input/capture.mov /output/result.glb
 ```
 
-Файл `photo.jpg` должен существовать, `result.ply` не должен существовать.
-Для локальной проверки OrbitHead задайте `WORKER_PROCESSOR=orbithead` и передайте
-видео вместо фото, например `/input/capture.mov`, а output назовите `result.glb`.
+Файл `photo.jpg` или `capture.mov` должен существовать, целевой `result.*` не должен
+существовать.
 В PowerShell используйте `${PWD}/photo.jpg` и `${PWD}/outputs` в аргументах `-v`.
 Контейнер запускается от root, чтобы читать закрытый SSH-ключ через bind mount.
 На Linux результат локального инференса также принадлежит root; при необходимости
-передайте его своему пользователю: `sudo chown "$(id -u):$(id -g)" outputs/result.ply`.
+передайте его своему пользователю: `sudo chown "$(id -u):$(id -g)" outputs/result.*`.
 При SSH добавляйте `-f compose.yaml -f compose.ssh.yaml` ко всем командам Compose
 в этом разделе, включая остановку и обновление.
 После обновления checkout воркера, FaceLift или OrbitHead: `docker compose up -d --build`.
@@ -329,6 +330,8 @@ bash scripts/install.sh cu128
 source .venv/bin/activate
 python -m metology_worker doctor
 python -m metology_worker infer-local /absolute/path/photo.jpg ./outputs/result.ply
+# OrbitHead:
+WORKER_PROCESSOR=orbithead python -m metology_worker infer-local /absolute/path/capture.mov ./outputs/result.glb
 ```
 
 Команда не перезаписывает существующий результат. Для локальной проверки не
@@ -343,7 +346,7 @@ worker_processors/FaceLift/checkpoints/gslrm/ckpt_0000000000021125.pt
 worker_processors/FaceLift/mvdiffusion/data/fixed_prompt_embeds_6view/clr_embeds.pt
 ```
 
-До получения реального PLY на целевой GPU установку нельзя считать проверенной.
+До получения реального PLY/GLB на целевой GPU установку нельзя считать проверенной.
 
 ## 4. Подключение очереди
 

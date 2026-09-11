@@ -2,7 +2,7 @@
 
 **Протокол:** `worker_api/v1`
 **Backend:** Metology
-**Первый тип:** `photo_3D_fl`
+**Поддерживаемые типы:** `photo_3D_fl`, `OrbitHead`
 
 Этот документ является контрактом между Metology backend и отдельным проектом
 вычислительного воркера. Воркер не вызывает HTTP API backend. Он получает задания через
@@ -84,9 +84,10 @@ Payload — небольшой JSON без идентификаторов пол
 {"v": 1, "type": "photo_3D_fl"}
 ```
 
-Воркер может использовать `type`, чтобы не будить неподдерживающий pool, но не должен
-считать payload заданием. Несколько одинаковых сигналов могут объединиться, а все
-слушатели могут получить один сигнал. После любого сигнала воркер вызывает claim.
+Payload для `OrbitHead` имеет тот же формат с `"type": "OrbitHead"`. Воркер может
+использовать `type`, чтобы не будить неподдерживающий pool, но не должен считать payload
+заданием. Несколько одинаковых сигналов могут объединиться, а все слушатели могут
+получить один сигнал. После любого сигнала воркер вызывает claim.
 
 ## 6. Общий жизненный цикл попытки
 
@@ -117,7 +118,7 @@ Heartbeat отправляется не реже одного раза в 30 с�
 SELECT *
 FROM worker_api.claim_job_v1(
     p_worker_id       => '019...'::uuid,
-    p_supported_types => ARRAY['photo_3D_fl']::text[]
+    p_supported_types => ARRAY['photo_3D_fl', 'OrbitHead']::text[]
 );
 ```
 
@@ -138,7 +139,7 @@ FROM worker_api.claim_job_v1(
 | `input_content_type` | text | Проверенный MIME |
 | `input_size_bytes` | bigint | Проверенный размер, `1..52428800` по default |
 | `result_bucket` | text | Обычно тот же bucket |
-| `result_object_key` | text | Уникальный `.ply` key этой попытки |
+| `result_object_key` | text | Уникальный result key этой попытки |
 
 Функция атомарно:
 
@@ -153,9 +154,11 @@ FROM worker_api.claim_job_v1(
 
 Воркер не конструирует result key самостоятельно и не подменяет его при завершении.
 Каждая попытка имеет отдельный key, поэтому очистка объекта потерявшей lease попытки не
-может удалить PLY, созданный новой попыткой.
+может удалить результат, созданный новой попыткой.
 
-## 8. Контракт `photo_3D_fl`
+## 8. Контракты типов
+
+### `photo_3D_fl`
 
 Вход:
 
@@ -179,6 +182,29 @@ FROM worker_api.claim_job_v1(
 jobs/v1/{installation_id}/{job_id}/result/{attempt_id}/result.ply
 ```
 
+### `OrbitHead`
+
+Вход:
+
+- ровно один объект;
+- MIME `video/mp4` или `video/quicktime`;
+- максимальный размер в claim уже учитывает текущую конфигурацию, default 50 MiB;
+- object key оканчивается `input/video`; расширение имени не является источником MIME.
+
+Результат:
+
+- ровно один бинарный GLB-файл;
+- object key из `result_object_key`, содержащий `attempt_id` и окончание `result.glb`;
+- content type `application/octet-stream`;
+- размер больше нуля;
+- SHA-256 передаётся lowercase hex из 64 символов.
+
+Формат выдаваемого backend ключа:
+
+```text
+jobs/v1/{installation_id}/{job_id}/result/{attempt_id}/result.glb
+```
+
 Разрешённые stages:
 
 ```text
@@ -189,6 +215,7 @@ exporting_ply
 uploading_result
 ```
 
+Stage `exporting_ply` исторически общий для v1 и используется также при экспорте GLB.
 Нельзя отправлять произвольные тексты, проценты, имена пациентов, исходные имена файлов
 или сообщения вычислительной библиотеки в `stage`.
 
@@ -242,7 +269,8 @@ FROM worker_api.heartbeat_job_v1(
 
 Перед complete воркер:
 
-1. формирует PLY во временный локальный файл;
+1. формирует result-файл во временный локальный файл (`.ply` для `photo_3D_fl`, `.glb`
+   для `OrbitHead`);
 2. проверяет, что размер больше нуля;
 3. вычисляет SHA-256;
 4. делает heartbeat `uploading_result`;
@@ -379,6 +407,7 @@ Backoff подключения воркера ограничивается, на
 ```text
 <worker-temp>/<attempt_id>/input
 <worker-temp>/<attempt_id>/result.ply
+<worker-temp>/<attempt_id>/result.glb
 ```
 
 Каталог удаляется рекурсивно в `finally`. При старте воркер удаляет оставшиеся каталоги
