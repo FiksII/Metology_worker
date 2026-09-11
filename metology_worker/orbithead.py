@@ -1,10 +1,21 @@
 """Adapter to the OrbitHead checkout."""
 import importlib
+import logging
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
 from .runtime import WorkerError
+
+LOG = logging.getLogger(__name__)
+
+
+def _subprocess_text(value, limit=2000):
+    if isinstance(value, bytes):
+        value = value.decode('utf-8', errors='replace')
+    text = str(value or '').replace('\r', '\\r').replace('\n', '\\n')
+    return text[:limit]
 
 
 class OrbitHeadEngine:
@@ -30,6 +41,13 @@ class OrbitHeadEngine:
             report = self.pipeline.run_pipeline(
                 str(source), str(output), preview=False, keep_intermediate=False
             )
+        except subprocess.CalledProcessError as error:
+            command = Path(str(error.cmd[0])).name if error.cmd else 'unknown'
+            LOG.error('orbithead_subprocess_failed command=%s returncode=%s stderr=%s',
+                      command, error.returncode, _subprocess_text(error.stderr))
+            if command in {'ffprobe', 'ffmpeg'}:
+                raise WorkerError('input_not_supported', False) from None
+            raise
         except FileNotFoundError:
             raise WorkerError('infrastructure_unavailable', True) from None
         check_cancel()

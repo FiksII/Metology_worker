@@ -1,4 +1,5 @@
 import hashlib
+import os
 import struct
 import tempfile
 import time
@@ -195,6 +196,32 @@ class RuntimeTests(unittest.TestCase):
             self.assertEqual(self.run_job(), 'failed')
         self.assertEqual(self.db.outcomes[0][1], 'worker_storage_exhausted')
         self.assertTrue(self.db.outcomes[0][-1])
+
+    def test_unexpected_processing_error_logs_exception_details(self):
+        class BadEngine:
+            def reconstruct(self, *args):
+                raise RuntimeError('orbithead_failed_marker')
+
+        with self.assertLogs('metology_worker.runtime', level='ERROR') as logs:
+            self.assertEqual(self.run_job(BadEngine()), 'failed')
+
+        text = '\n'.join(logs.output)
+        self.assertIn('attempt_failed code=internal_error error_type=RuntimeError', text)
+        self.assertIn('Traceback (most recent call last):', text)
+        self.assertIn('orbithead_failed_marker', text)
+
+    def test_debug_preserve_failed_attempt_keeps_input_directory(self):
+        class BadEngine:
+            def reconstruct(self, *args):
+                raise WorkerError('input_not_supported', False)
+
+        with patch.dict(os.environ, {'WORKER_PRESERVE_FAILED_ATTEMPTS': '1'}):
+            self.assertEqual(self.run_job(BadEngine()), 'failed')
+
+        attempts = list(self.root.iterdir())
+        self.assertEqual(len(attempts), 1)
+        self.assertTrue(attempts[0].name.startswith('attempt-'))
+        self.assertEqual((attempts[0] / 'input').read_bytes(), b'img')
 
 
 if __name__ == '__main__':

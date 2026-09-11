@@ -1,6 +1,8 @@
 """Attempt ownership and lifecycle, independent of CUDA and network libraries."""
 import hashlib
 import logging
+import os
+import shutil
 import struct
 import tempfile
 import threading
@@ -143,6 +145,9 @@ def run_attempt(db, storage, engine, assignment, root, shutdown_deadline=None):
     root = Path(root)
     uploaded = False
     preserve = False
+    preserve_failed_attempts = os.environ.get('WORKER_PRESERVE_FAILED_ATTEMPTS') == '1'
+    directory = None
+    cleanup_attempt_directory = True
 
     def cleanup_result():
         nonlocal uploaded
@@ -157,7 +162,16 @@ def run_attempt(db, storage, engine, assignment, root, shutdown_deadline=None):
         with ExitStack() as files:
             try:
                 root.mkdir(parents=True, exist_ok=True)
-                directory = files.enter_context(tempfile.TemporaryDirectory(prefix='attempt-', dir=root))
+                if preserve_failed_attempts:
+                    directory = tempfile.mkdtemp(prefix='attempt-', dir=root)
+
+                    def cleanup_directory():
+                        if cleanup_attempt_directory:
+                            shutil.rmtree(directory, ignore_errors=True)
+
+                    files.callback(cleanup_directory)
+                else:
+                    directory = files.enter_context(tempfile.TemporaryDirectory(prefix='attempt-', dir=root))
                 result_format = getattr(engine, 'result_format', 'ply')
                 source, result = Path(directory) / 'input', Path(directory) / f'result.{result_format}'
                 guard.stage('downloading')
@@ -220,7 +234,13 @@ def run_attempt(db, storage, engine, assignment, root, shutdown_deadline=None):
                     code, retryable = 'infrastructure_unavailable', True
                 else:
                     code, retryable = 'internal_error', False
-                LOG.error('attempt_failed code=%s', code)
+                if code == 'internal_error':
+                    LOG.exception('attempt_failed code=%s error_type=%s', code, type(error).__name__)
+                else:
+                    LOG.error('attempt_failed code=%s', code)
+                if preserve_failed_attempts and directory is not None:
+                    cleanup_attempt_directory = False
+                    LOG.error('attempt_directory_preserved path=%s', directory)
                 with guard.lock:
                     try:
                         guard.check(allow_cancel=True)
