@@ -107,8 +107,13 @@ COPY worker_processors/orbithead/ ./worker_processors/orbithead/
 RUN --mount=type=cache,target=/root/.cache/pip \
     python -m pip freeze > /opt/worker/installed-requirements.txt
 # OrbitHead has its own Python 3.12 / Torch / CUDA dependencies; do not mix with FaceLift.
+# Both cuDNN wheels own nvidia/cudnn/lib. Keep the cu12 9.5.1.17 version
+# pinned by Torch in uv.lock; cu13 overwrites it and breaks BiRefNet inference.
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --project /opt/worker/worker_processors/orbithead --frozen --no-dev --extra gpu --extra da3
+    uv sync --project /opt/worker/worker_processors/orbithead --frozen --no-dev --extra gpu --extra da3 \
+      --no-install-package nvidia-cudnn-cu13
+RUN /opt/worker/worker_processors/orbithead/.venv/bin/python -c \
+    "import ctypes, importlib.metadata as m; d = m.distribution('nvidia-cudnn-cu12'); assert d.version == '9.5.1.17'; assert not any(p.metadata['Name'] == 'nvidia-cudnn-cu13' for p in m.distributions()); lib = ctypes.CDLL(str(d.locate_file('nvidia/cudnn/lib/libcudnn.so.9'))); lib.cudnnGetVersion.restype = ctypes.c_size_t; assert lib.cudnnGetVersion() == 90501, 'Unexpected cuDNN binary'"
 RUN /opt/worker/worker_processors/orbithead/.venv/bin/python -c \
     "from rembg import new_session; new_session('birefnet-portrait'); new_session('u2net_human_seg')"
 RUN test -f "$FACELIFT_PATH/inference.py" \

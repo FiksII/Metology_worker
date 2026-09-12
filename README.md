@@ -85,8 +85,15 @@ orbithead run INPUT OUTPUT --gpu 0 --geometry da3 --frames 48 --da3-res 756 --jp
 Для установки OrbitHead без Docker (нужны установленные COLMAP/OpenMVS и `uv`):
 
 ```bash
-uv sync --project worker_processors/orbithead --frozen --no-dev --extra gpu --extra da3
+uv sync --project worker_processors/orbithead --frozen --no-dev --extra gpu --extra da3 --no-install-package nvidia-cudnn-cu13
 ```
+
+В сборке используется `nvidia-cudnn-cu12==9.5.1.17` из lock-файла OrbitHead.
+Пакет `nvidia-cudnn-cu13` исключён: оба пакета записывают библиотеки в
+`nvidia/cudnn/lib`, и версия cu13 вызывает сбой BiRefNet при построении масок.
+Dockerfile проверяет фактическую версию cuDNN после установки.
+Эта команда рассчитана на новое окружение. Если в `.venv` уже были оба пакета
+cuDNN, создайте окружение заново: из-за общих файлов одной синхронизации недостаточно.
 
 Адаптер использует Python из `ORBITHEAD_PATH/.venv`; для другого окружения
 задайте `ORBITHEAD_PYTHON` абсолютным путём. `doctor` проверяет зависимости DA3
