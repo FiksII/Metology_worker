@@ -24,6 +24,7 @@ worker_processors/FaceLift/**
 !worker_processors/orbithead/
 !worker_processors/orbithead/**
 **/__pycache__/
+**/.venv/
 **/*.py[cod]
 **/.git/
 **/.env*

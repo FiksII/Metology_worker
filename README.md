@@ -8,8 +8,8 @@ OrbitHead.
 
 ## Быстрый запуск в Docker
 
-Образ содержит Python 3.10, CUDA toolkit, PyTorch, зависимости воркера, FaceLift
-и OrbitHead с COLMAP/OpenMVS. На хосте нужны Docker Compose v2+, NVIDIA driver
+Образ содержит Python 3.10 для воркера и FaceLift, отдельное окружение Python 3.12
+для OrbitHead, CUDA toolkit и COLMAP/OpenMVS. На хосте нужны Docker Compose v2+, NVIDIA driver
 и доступ GPU из контейнеров. Для Linux настройте
 [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html);
 для Windows используйте Docker Desktop с WSL2 и Linux containers.
@@ -21,6 +21,13 @@ CUDA toolkit и Python на хосте при таком запуске не н�
 контекста сборки; небольшой `clr_embeds.pt` из репозитория FaceLift включён.
 OrbitHead лежит в `worker_processors/orbithead` и устанавливается в этот же
 Docker-образ.
+
+Зависимости OrbitHead устанавливаются через `uv sync --frozen --no-dev --extra gpu --extra da3`
+из его `uv.lock`, без preview/EGL. Его Torch не заменяет Torch FaceLift.
+Текущий GPU extra OrbitHead использует ONNX Runtime с CUDA 13 и требует драйвер
+NVIDIA ≥580 (согласно `worker_processors/orbithead/pyproject.toml`), в том числе
+при сборке профиля `cu124`. Веса DA3 (~6 GB) скачиваются при первом запуске
+и сохраняются в общем томе `model-cache`.
 
 ```bash
 cp .env.example .env
@@ -51,6 +58,39 @@ WORKER_PROCESSOR=orbithead|facelift # оба типа в одном процес
 Значение можно разделять `|`, запятыми или пробелами. При `orbithead` воркер
 передаёт в `claim_job_v1` тип `OrbitHead` и загружает один GLB-файл. При
 `facelift` остаётся прежний тип `photo_3D_fl` и PLY-результат.
+
+OrbitHead запускается в отдельном процессе через его CLI с параметрами:
+
+```bash
+orbithead run INPUT OUTPUT --gpu 0 --geometry da3 --frames 48 --da3-res 756 --jpeg 92 --texture-size 8192 --no-preview --clean
+```
+
+Параметры настраиваются через `.env`: `ORBITHEAD_GPU`, `ORBITHEAD_GEOMETRY`,
+`ORBITHEAD_FRAMES`, `ORBITHEAD_DA3_RES`, `ORBITHEAD_JPEG`, `ORBITHEAD_TEXTURE_SIZE`.
+`ORBITHEAD_CARVE=1` и `ORBITHEAD_MASKED_SFM=1` включают соответствующие флаги;
+по умолчанию оба выключены. Воркер всегда отключает preview и включает clean.
+В S3 отправляется `head.glb` с PNG-текстурой; JPEG-копия не загружается.
+
+Для обычного видео оставьте `da3`; `mvs` предназначен для чистой студийной съёмки.
+На длинных видео можно поднять число кадров до 64; `DA3_RES=1008` повышает
+точность формы, но сокращает число кадров, помещающихся в DA3. Для текстуры
+1080p можно снизить `ORBITHEAD_TEXTURE_SIZE` до 4096. `ORBITHEAD_JPEG=0` отключает
+ненужную JPEG-копию. Carve включайте только при хороших масках и заметном фоне
+в модели; masked SfM — при движении человека относительно статичного фона.
+
+В Compose оставляйте `ORBITHEAD_GPU=0`: контейнер видит одну карту, выбранную
+через `GPU_DEVICE_ID` (для второго воркера — `GPU_DEVICE_ID_2`). При запуске
+без Docker `ORBITHEAD_GPU` выбирает физическую карту.
+
+Для установки OrbitHead без Docker (нужны установленные COLMAP/OpenMVS и `uv`):
+
+```bash
+uv sync --project worker_processors/orbithead --frozen --no-dev --extra gpu --extra da3
+```
+
+Адаптер использует Python из `ORBITHEAD_PATH/.venv`; для другого окружения
+задайте `ORBITHEAD_PYTHON` абсолютным путём. `doctor` проверяет зависимости DA3
+и CUDA именно в этом окружении.
 
 ### Если PostgreSQL подключается через SSH
 

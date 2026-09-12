@@ -20,6 +20,7 @@ services:
       WORKER_PROCESSOR: ${WORKER_PROCESSOR:-facelift}
       FACELIFT_PATH: /opt/worker/worker_processors/FaceLift
       ORBITHEAD_PATH: /opt/worker/worker_processors/orbithead
+      ORBITHEAD_PYTHON: /opt/worker/worker_processors/orbithead/.venv/bin/python
       WORKER_TEMP_ROOT: /var/lib/metology-worker/tmp
     init: true
     restart: unless-stopped

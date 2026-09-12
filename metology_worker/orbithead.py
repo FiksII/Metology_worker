@@ -1,9 +1,9 @@
-"""Adapter to the OrbitHead checkout."""
-import importlib
+"""Run OrbitHead's CLI in its own Python environment."""
+import json
 import logging
+import os
 import shutil
 import subprocess
-import sys
 from pathlib import Path
 
 from .runtime import WorkerError
@@ -11,47 +11,62 @@ from .runtime import WorkerError
 LOG = logging.getLogger(__name__)
 
 
-def _subprocess_text(value, limit=2000):
-    if isinstance(value, bytes):
-        value = value.decode('utf-8', errors='replace')
-    text = str(value or '').replace('\r', '\\r').replace('\n', '\\n')
-    return text[:limit]
+def orbithead_python(root):
+    override = os.environ.get('ORBITHEAD_PYTHON')
+    if override:
+        return override
+    executable = 'Scripts/python.exe' if os.name == 'nt' else 'bin/python'
+    return str(Path(root) / '.venv' / executable)
 
 
 class OrbitHeadEngine:
     result_format = 'glb'
 
     def __init__(self, root):
-        root = Path(root).resolve()
-        pipeline = root / 'orbithead' / 'pipeline.py'
-        if not pipeline.is_file():
+        self.root = Path(root).resolve()
+        if not (self.root / 'orbithead' / 'cli.py').is_file():
             raise ValueError('orbithead_checkout_missing')
-        if str(root) not in sys.path:
-            sys.path.insert(0, str(root))
-        sys.modules.pop('orbithead.pipeline', None)
-        sys.modules.pop('orbithead', None)
-        self.pipeline = importlib.import_module('orbithead.pipeline')
-        if Path(self.pipeline.__file__).resolve() != pipeline:
-            raise RuntimeError('wrong_orbithead_module')
+        self.python = orbithead_python(self.root)
+        self.options = []
+        for flag, default, minimum in [('gpu', 0, 0), ('frames', 48, 1), ('da3-res', 756, 1),
+                                       ('jpeg', 92, 0), ('texture-size', 8192, 1)]:
+            value = int(os.environ.get('ORBITHEAD_' + flag.upper().replace('-', '_'), default))
+            if value < minimum or (flag == 'jpeg' and value > 100):
+                raise ValueError('invalid_orbithead_' + flag.replace('-', '_'))
+            self.options.extend(['--' + flag, str(value)])
+        geometry = os.environ.get('ORBITHEAD_GEOMETRY', 'da3')
+        if geometry not in {'da3', 'mvs'}:
+            raise ValueError('invalid_orbithead_geometry')
+        self.options.extend(['--geometry', geometry, '--no-preview', '--clean'])
+        for flag in ['carve', 'masked-sfm']:
+            value = os.environ.get('ORBITHEAD_' + flag.upper().replace('-', '_'), '0')
+            if value not in {'0', '1'}:
+                raise ValueError('invalid_orbithead_' + flag.replace('-', '_'))
+            if value == '1':
+                self.options.append('--' + flag)
 
     def reconstruct(self, source, target, on_stage, check_cancel):
         check_cancel()
-        output = Path(source).parent / 'orbithead'
+        source = Path(source).resolve()
+        output = source.parent / 'orbithead'
+        status = source.parent / 'orbithead-error.json'
+        status.unlink(missing_ok=True)
+        command = [self.python, str(Path(__file__).with_name('orbithead_runner.py')),
+                   str(self.root), str(status), 'run', str(source), str(output), *self.options]
         try:
-            report = self.pipeline.run_pipeline(
-                str(source), str(output), preview=False, keep_intermediate=False
-            )
-        except subprocess.CalledProcessError as error:
-            command = Path(str(error.cmd[0])).name if error.cmd else 'unknown'
-            LOG.error('orbithead_subprocess_failed command=%s returncode=%s stderr=%s',
-                      command, error.returncode, _subprocess_text(error.stderr))
-            if command in {'ffprobe', 'ffmpeg'}:
-                raise WorkerError('input_not_supported', False) from None
-            raise
+            result = subprocess.run(command, cwd=self.root, check=False)
         except FileNotFoundError:
             raise WorkerError('infrastructure_unavailable', True) from None
         check_cancel()
-        generated = Path(report.get('glb', {}).get('png', ''))
+        if result.returncode:
+            if status.is_file():
+                error = json.loads(status.read_text(encoding='utf-8'))
+                LOG.error('orbithead_subprocess_failed command=%s returncode=%s stderr=%s',
+                          error['command'], error['returncode'], error['stderr'])
+                if error['code']:
+                    raise WorkerError(error['code'], error['retryable'])
+            raise subprocess.CalledProcessError(result.returncode, command)
+        generated = output / 'head.glb'
         if not generated.is_file():
             raise WorkerError('result_invalid', False)
         on_stage('exporting_ply')

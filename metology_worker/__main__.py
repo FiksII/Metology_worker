@@ -4,6 +4,7 @@ import os
 import platform
 import shutil
 import signal
+import subprocess
 import sys
 import tempfile
 import threading
@@ -37,6 +38,7 @@ def doctor(config):
                          'mvdiffusion/data/fixed_prompt_embeds_6view/clr_embeds.pt']:
             checks[relative] = (config.facelift_path / relative).exists()
     if 'orbithead' in config.processors:
+        from .orbithead import orbithead_python
         checks['OrbitHead checkout'] = (config.orbithead_path / 'orbithead' / 'pipeline.py').is_file()
         checks['ffmpeg'] = shutil.which('ffmpeg') is not None
         checks['COLMAP'] = shutil.which('colmap') is not None
@@ -44,8 +46,17 @@ def doctor(config):
         checks['OpenMVS'] = bool(openmvs and (Path(openmvs) / 'DensifyPointCloud').is_file()) or (
             shutil.which('DensifyPointCloud') is not None
         )
-        for name in ['numpy', 'cv2', 'PIL', 'trimesh', 'scipy', 'rembg', 'skimage', 'onnxruntime']:
-            checks[name] = importlib.util.find_spec(name) is not None
+        try:
+            probe = subprocess.run([
+                orbithead_python(config.orbithead_path), '-c',
+                'import sys; assert sys.version_info >= (3, 11); '
+                'import numpy, cv2, PIL, trimesh, scipy, rembg, skimage, onnxruntime; '
+                'import torch, torchvision, xformers, depth_anything_3, open3d; '
+                'assert torch.cuda.is_available()'
+            ], check=False, timeout=60)
+            checks['OrbitHead environment / DA3 / CUDA'] = probe.returncode == 0
+        except (OSError, subprocess.TimeoutExpired):
+            checks['OrbitHead environment / DA3 / CUDA'] = False
     for name in ['psycopg', 'boto3']:
         checks[name] = importlib.util.find_spec(name) is not None
     if config.ssh.enabled:

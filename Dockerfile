@@ -88,13 +88,14 @@ RUN git clone --depth 1 https://github.com/cdcseacave/VCG.git /opt/vcglib \
     && rm -rf /tmp/openMVS
 
 FROM gpu-dependencies AS gpu
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
 ENV FACELIFT_PATH=/opt/worker/worker_processors/FaceLift \
     ORBITHEAD_PATH=/opt/worker/worker_processors/orbithead \
     OPENMVS_BIN=/opt/openmvs/bin/OpenMVS \
     WORKER_TEMP_ROOT=/var/lib/metology-worker/tmp \
     HF_HOME=/root/.cache/huggingface \
     U2NET_HOME=/root/.cache/u2net \
-    PYOPENGL_PLATFORM=egl \
+    UV_PYTHON_INSTALL_DIR=/opt/uv-python \
     NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics
 WORKDIR /opt/worker
 COPY pyproject.toml ./
@@ -104,9 +105,12 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 COPY worker_processors/FaceLift/ ./worker_processors/FaceLift/
 COPY worker_processors/orbithead/ ./worker_processors/orbithead/
 RUN --mount=type=cache,target=/root/.cache/pip \
-    python -m pip install './worker_processors/orbithead[preview]' \
-    && python -c "from rembg import new_session; new_session('u2net_human_seg')" \
-    && python -m pip freeze > /opt/worker/installed-requirements.txt
+    python -m pip freeze > /opt/worker/installed-requirements.txt
+# OrbitHead has its own Python 3.12 / Torch / CUDA dependencies; do not mix with FaceLift.
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --project /opt/worker/worker_processors/orbithead --frozen --no-dev --extra gpu --extra da3
+RUN /opt/worker/worker_processors/orbithead/.venv/bin/python -c \
+    "from rembg import new_session; new_session('birefnet-portrait'); new_session('u2net_human_seg')"
 RUN test -f "$FACELIFT_PATH/inference.py" \
     && test -f "$ORBITHEAD_PATH/orbithead/pipeline.py" \
     && test -f "$FACELIFT_PATH/mvdiffusion/data/fixed_prompt_embeds_6view/clr_embeds.pt" \
