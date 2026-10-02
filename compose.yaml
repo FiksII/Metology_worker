@@ -48,6 +48,11 @@ services:
   worker-gpu-1:
     <<: *worker
     profiles: [multi-gpu]
+    env_file:
+      - ${WORKER_ENV_FILE:-.env}
+      # Optional overrides for the second worker only, e.g. another database / SSH host.
+      - path: ${WORKER_ENV_FILE_2:-.env.gpu1}
+        required: false
     deploy:
       resources:
         reservations:
