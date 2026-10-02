@@ -56,9 +56,9 @@ class SSHTunnel:
             asyncio.run(run())
         except asyncio.CancelledError:
             pass
-        except Exception:
+        except Exception as error:
             self.failure = 'ssh_tunnel_internal_error'
-            LOG.error(self.failure)
+            LOG.error('%s type=%s', self.failure, type(error).__name__)
         finally:
             self.ready.clear()
             self.started.set()
@@ -101,8 +101,8 @@ class SSHTunnel:
                     LOG.error(self.failure)
                     self.started.set()
                     return
-            except asyncssh.Error:
-                pass
+            except (asyncssh.Error, asyncio.TimeoutError):
+                pass  # connect_timeout: before Python 3.11 TimeoutError is not an OSError.
             finally:
                 self.ready.clear()
                 if listener:

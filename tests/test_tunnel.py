@@ -6,6 +6,7 @@ import unittest
 import threading
 from contextlib import contextmanager
 from pathlib import Path
+from unittest import mock
 
 from metology_worker.config import SSHConfig
 from metology_worker.tunnel import SSHTunnel
@@ -102,6 +103,34 @@ class TunnelTests(unittest.IsolatedAsyncioTestCase):
             await self.exchange(port)
         finally:
             await asyncio.to_thread(tunnel.__exit__, None, None, None)
+
+    async def test_connect_timeout_reconnects_instead_of_failing(self):
+        import asyncssh
+        connect, calls = asyncssh.connect, []
+
+        async def flaky(*args, **kwargs):
+            calls.append(None)
+            if len(calls) == 2:
+                # Python 3.10: not an OSError, unlike the builtin TimeoutError.
+                raise asyncio.TimeoutError
+            return await connect(*args, **kwargs)
+
+        with mock.patch.object(asyncssh, 'connect', flaky):
+            tunnel = SSHTunnel(self.config)
+            await asyncio.to_thread(tunnel.__enter__)
+            try:
+                port = tunnel.local_port
+                self.connections[-1].abort()
+                for _ in range(200):
+                    await asyncio.sleep(0.05)
+                    if tunnel.failure or (len(calls) >= 3 and tunnel.ready.is_set()):
+                        break
+                self.assertIsNone(tunnel.failure)
+                self.assertGreaterEqual(len(calls), 3)
+                tunnel.check_ready()
+                await self.exchange(port)
+            finally:
+                await asyncio.to_thread(tunnel.__exit__, None, None, None)
 
     async def test_unknown_host_key_is_rejected(self):
         self.known_hosts.write_text('')
