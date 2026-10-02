@@ -28,6 +28,11 @@ ssh -p 2221 -i C:/Users/Ilya/.ssh/id_rsa ii@95.79.44.129
 - Сервисы: `worker` и `worker-gpu-1`, профиль Compose `multi-gpu`.
 - Контейнеры: `metology-worker-worker-1`, `metology-worker-worker-gpu-1-1`.
 - Оба воркера настроены на `WORKER_PROCESSOR=orbithead`.
+- С 2026-10-02 воркеры обслуживают разные backend: `worker` (первая карта) —
+  dev (`dev.aestory.space`) по общему `.env`; `worker-gpu-1` (вторая карта) —
+  prod (`109.69.16.98`) через серверный файл `.env.gpu1`, который переопределяет
+  `DATABASE_URL`, `SSH_*` и несекретные `S3_*` только для этого сервиса.
+  S3-ключи общие, из `.env`. Host key прода добавлен в `/home/ii/.ssh/known_hosts`.
 - Каждый контейнер видит одну карту; внутри `ORBITHEAD_GPU=0`.
   Физические карты выбираются через `GPU_DEVICE_ID` и `GPU_DEVICE_ID_2`.
 - OrbitHead использует отдельное окружение Python 3.12 с extras `gpu` и `da3`.
